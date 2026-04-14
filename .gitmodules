@@ -1,0 +1,6 @@
+[submodule "ltprg"]
+	path = ltprg
+	url = https://github.com/forkunited/ltprg.git
+[submodule "coop-nets"]
+	path = coop-nets
+	url = https://github.com/futurulus/coop-nets.git
