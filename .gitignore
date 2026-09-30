@@ -6,6 +6,5 @@ slurm
 generated_tables
 hugging_face_token
 PATH
-data
 qwen2vl_patch_grpo
 wandb
