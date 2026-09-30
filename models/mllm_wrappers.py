@@ -218,7 +218,7 @@ class Qwen(MLLMWrapper):
                 model_id,
                 torch_dtype="auto",  # or torch.bfloat16
                 # torch_dtype=torch.bfloat16,
-                # attn_implementation="flash_attention_2",
+                attn_implementation="flash_attention_2",
                 device_map="auto",
                 cache_dir=kwargs.get("cache_dir", None),
             )
@@ -427,6 +427,7 @@ class Qwen3_5(MLLMWrapper):
             Qwen3_5ForConditionalGeneration,
             AutoTokenizer,
             AutoProcessor,
+            GPTQConfig
         )
 
         if quant is not None:
@@ -444,15 +445,31 @@ class Qwen3_5(MLLMWrapper):
 
         print(f"building {self.__class__.__name__} model...")
 
-        self.model = Qwen3_5ForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype="auto",  # or torch.bfloat16
-            # torch_dtype=torch.bfloat16,
-            # attn_implementation="flash_attention_2",
-            device_map="auto",
-            cache_dir=kwargs.get("cache_dir", None),
-            
-        )
+        quantization_config = GPTQConfig(
+            bits=4,
+            backend="auto_trainable"
+        )   
+
+        if '27b' in model_id.lower():
+            self.model = Qwen3_5ForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype="auto",  # or torch.bfloat16
+                # torch_dtype=torch.bfloat16,
+                # attn_implementation="flash_attention_2",
+                device_map="auto",
+                cache_dir=kwargs.get("cache_dir", None),
+                quantization_config=quantization_config,
+            )
+        else:
+            self.model = Qwen3_5ForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype="auto",  # or torch.bfloat16
+                # torch_dtype=torch.bfloat16,
+                # attn_implementation="flash_attention_2",
+                device_map="auto",
+                cache_dir=kwargs.get("cache_dir", None),
+                
+            )
 
         # default processer
         self.processor = AutoProcessor.from_pretrained(
@@ -462,7 +479,7 @@ class Qwen3_5(MLLMWrapper):
         self.model_id = model_id
         
         self.model_size = None
-        for possible_size in ['0.8b', '2b', '4b', '9b']:
+        for possible_size in ['0.8b', '2b', '4b', '9b', '27b']:
             if f'-{possible_size}' in self.model_id.lower():
                 self.model_size = possible_size
         assert self.model_size is not None
@@ -534,10 +551,162 @@ class Qwen3_5(MLLMWrapper):
         # print("first param dtype:", first_param.dtype)
 
         # print("Number of generated tokens:", len(response_ids))
-        print("Generated response:", response)
+        #print("Generated response:", response)
 
 
         return response
+
+    # def generate_batch(
+    #     self,
+    #     prompts,
+    #     images,
+    #     prune_output_to_response=True,
+    #     **generate_kwargs
+    # ):
+
+    #     assert len(prompts) == len(images)
+
+    #     messages_batch = []
+
+    #     for prompt, image in zip(prompts, images):
+
+    #         messages = [
+    #             {
+    #                 "role": "user",
+    #                 "content": [
+    #                     {
+    #                         "type": "image",
+    #                         "image": image,
+    #                     },
+    #                     {
+    #                         "type": "text",
+    #                         "text": prompt
+    #                     },
+    #                 ],
+    #             }
+    #         ]
+
+    #         messages_batch.append(messages)
+
+    #     # Chat-Template für jedes Sample
+    #     texts = [
+    #         self.processor.apply_chat_template(
+    #             messages,
+    #             tokenize=False,
+    #             add_generation_prompt=True,
+    #             enable_thinking=False
+    #         )
+    #         for messages in messages_batch
+    #     ]
+
+    #     # Für decoder-only generation mit Padding sinnvoll
+    #     self.processor.tokenizer.padding_side = "left"
+
+    #     inputs = self.processor(
+    #         text=texts,
+    #         images=images,
+    #         padding=True,
+    #         return_tensors="pt"
+    #     ).to(self.model.device)
+
+    #     generation_config = GenerationConfig(
+    #         **generate_kwargs
+    #     )
+
+    #     with torch.inference_mode():
+    #         response_ids = self.model.generate(
+    #             **inputs,
+    #             generation_config=generation_config
+    #         )
+
+    #     # model.generate() enthält bei decoder-only Modellen
+    #     # Prompt + neue Tokens.
+    #     input_length = inputs["input_ids"].shape[1]
+
+    #     generated_ids = response_ids[:, input_length:]
+
+    #     responses = self.processor.batch_decode(
+    #         generated_ids,
+    #         skip_special_tokens=True,
+    #         clean_up_tokenization_spaces=False
+    #     )
+
+    #     return responses
+
+    def generate_batch(
+        self,
+        prompts,
+        images,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+
+        assert len(prompts) == len(images)
+
+        # Für decoder-only batched generation
+        self.processor.tokenizer.padding_side = "left"
+
+        conversations = []
+
+        for prompt, image in zip(prompts, images):
+
+            conversation = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "image": image,
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                }
+            ]
+
+            conversations.append(conversation)
+
+        # Wichtig:
+        # Liste von Konversationen direkt an apply_chat_template
+        inputs = self.processor.apply_chat_template(
+            conversations,
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
+            padding=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+
+        inputs = inputs.to(self.model.device)
+
+        generation_config = GenerationConfig(
+            **generate_kwargs
+        )
+
+        self.model.eval()
+
+        with torch.inference_mode():
+
+            response_ids = self.model.generate(
+                **inputs,
+                generation_config=generation_config,
+            )
+
+        # Bei Padding haben alle input_ids dieselbe Länge
+        input_length = inputs["input_ids"].shape[1]
+
+        generated_ids = response_ids[:, input_length:]
+
+        responses = self.processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+
+        return responses
     
     def generate_single_images(self, prompt, image1, image2, image3, prune_output_to_response=True, **generate_kwargs):
         
@@ -667,8 +836,537 @@ class Qwen3_5(MLLMWrapper):
         )
 
         return response
+    
 
 
+
+
+
+class Qwen3_5_vLLM(MLLMWrapper):
+    """
+    vLLM wrapper for Qwen3.5-VL 27B GPTQ Int4 inference.
+    Keeps a similar interface to your existing Qwen3_5 wrapper:
+        model.generate(prompt, image, **generate_kwargs)
+    """
+
+    def __init__(self, model_id="Qwen/Qwen3.5-27B-GPTQ-Int4", quant=None, **kwargs):
+        import os
+        from transformers import AutoProcessor
+        from vllm import LLM
+
+        os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+        print(f"building {self.__class__.__name__} model with vLLM...")
+
+        self.model_id = model_id
+        self.quant = quant
+        self.model_size = "27b" if "27b" in model_id.lower() else None
+
+        self.processor = AutoProcessor.from_pretrained(
+            model_id,
+            cache_dir=kwargs.get("cache_dir", None),
+            trust_remote_code=True,
+        )
+
+        
+        #self.model = LLM(
+        #    model=model_id,
+        #    quantization= "gptq",
+        #    dtype= "auto",
+        #    trust_remote_code=True,
+        #    download_dir=kwargs.get("cache_dir", None),
+
+            # Important for 24 GB VRAM:
+        #    gpu_memory_utilization= 0.6,
+        #    max_model_len=512,
+        #    max_num_seqs=1,
+        #    max_num_batched_tokens=512,
+        #    limit_mm_per_prompt={"image": 1},
+
+            # Falls nötig:
+        #    tensor_parallel_size=1,
+        #    enforce_eager=True
+        #)
+
+        self.model = LLM(
+            model=model_id,
+            quantization=kwargs.get("vllm_quantization", "compressed-tensors"),
+            dtype=kwargs.get("dtype", "auto"),
+            trust_remote_code=True,
+            download_dir=kwargs.get("cache_dir", None),
+            gpu_memory_utilization=kwargs.get("gpu_memory_utilization", 0.92),
+            max_model_len=kwargs.get("max_model_len", 2048),
+            max_num_seqs=kwargs.get("max_num_seqs", 1),
+            tensor_parallel_size=kwargs.get("tensor_parallel_size", 1),
+            enforce_eager=kwargs.get("enforce_eager", False),
+        )
+
+        self.device = "cuda"
+
+    def _build_messages(self, prompt, images):
+        content = []
+
+        for image in images:
+            content.append({
+                "type": "image",
+                "image": image,
+            })
+
+        content.append({
+            "type": "text",
+            "text": prompt,
+        })
+
+        return [
+            {
+                "role": "user",
+                "content": content,
+            }
+        ]
+
+    def _build_vllm_prompt(self, messages):
+        try:
+            return self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:
+            return self.processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+    def _sampling_params_from_kwargs(self, generate_kwargs):
+        from vllm import SamplingParams
+
+        max_tokens = generate_kwargs.pop(
+            "max_new_tokens",
+            generate_kwargs.pop("max_tokens", 80)
+        )
+
+        temperature = generate_kwargs.pop("temperature", 0.0)
+        top_p = generate_kwargs.pop("top_p", 1.0)
+
+        # vLLM nutzt max_tokens statt max_new_tokens
+        return SamplingParams(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            **generate_kwargs,
+        )
+
+    def generate(self, prompt, image, prune_output_to_response=True, **generate_kwargs):
+        messages = self._build_messages(prompt, [image])
+        text_prompt = self._build_vllm_prompt(messages)
+
+        sampling_params = self._sampling_params_from_kwargs(generate_kwargs)
+
+        request = {
+            "prompt": text_prompt,
+            "multi_modal_data": {
+                "image": image,
+            },
+        }
+
+        outputs = self.model.generate(
+            [request],
+            sampling_params=sampling_params,
+        )
+
+        return outputs[0].outputs[0].text.strip()
+
+    def generate_single_images(
+        self,
+        prompt,
+        image1,
+        image2,
+        image3,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        images = [image1, image2, image3]
+        messages = self._build_messages(prompt, images)
+        text_prompt = self._build_vllm_prompt(messages)
+
+        sampling_params = self._sampling_params_from_kwargs(generate_kwargs)
+
+        request = {
+            "prompt": text_prompt,
+            "multi_modal_data": {
+                "image": images,
+            },
+        }
+
+        outputs = self.model.generate(
+            [request],
+            sampling_params=sampling_params,
+        )
+
+        return outputs[0].outputs[0].text.strip()
+
+    def generate_from_messages(
+        self,
+        messages,
+        images,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        text_prompt = self._build_vllm_prompt(messages)
+        sampling_params = self._sampling_params_from_kwargs(generate_kwargs)
+
+        request = {
+            "prompt": text_prompt,
+            "multi_modal_data": {
+                "image": images if len(images) > 1 else images[0],
+            },
+        }
+
+        outputs = self.model.generate(
+            [request],
+            sampling_params=sampling_params,
+        )
+
+        return outputs[0].outputs[0].text.strip()
+
+
+
+class Qwen3_5_GGUF(MLLMWrapper):
+    """
+    GGUF wrapper for Qwen3.5-27B UD-Q4_K_XL with llama-cpp-python.
+
+    Needs:
+    - main GGUF model file, e.g. UD-Q4_K_XL.gguf
+    - mmproj GGUF file for vision, if using images
+    """
+
+    def __init__(
+        self,
+        model_id=None,
+        quant=None,
+        **kwargs
+    ):
+        from llama_cpp import Llama
+        import os
+
+        print(f"building {self.__class__.__name__} model with llama.cpp...")
+
+        self.model_id = model_id or "unsloth/Qwen3.5-27B-GGUF"
+        self.quant = quant or "UD-Q4_K_XL"
+
+        self.model_path = kwargs.get("model_path", None)
+        self.mmproj_path = kwargs.get("mmproj_path", None)
+
+        if self.model_path is None:
+            raise ValueError("You must pass model_path='/path/to/UD-Q4_K_XL.gguf'")
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(self.model_path)
+
+        if self.mmproj_path is not None and not os.path.exists(self.mmproj_path):
+            raise FileNotFoundError(self.mmproj_path)
+
+        self.model = Llama(
+            model_path=self.model_path,
+
+            # GPU offload
+            n_gpu_layers=kwargs.get("n_gpu_layers", -1),
+
+            # Context length
+            n_ctx=kwargs.get("n_ctx", 2048),
+
+            # Batch settings
+            n_batch=kwargs.get("n_batch", 1024),
+            n_ubatch=kwargs.get("n_ubatch", 512),
+
+            # Vision projector
+            mmproj= self.mmproj_path,
+
+            # Qwen chat format
+            chat_format=kwargs.get("chat_format", "qwen"),
+
+            verbose=False,
+        )
+
+        self.model_size = "27b"
+        self.device = "cuda"
+
+    def generate(
+        self,
+        prompt,
+        image=None,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        max_tokens = generate_kwargs.pop(
+            "max_new_tokens",
+            generate_kwargs.pop("max_tokens", 150)
+        )
+
+        temperature = generate_kwargs.pop("temperature", 0.8)
+        top_p = generate_kwargs.pop("top_p", 0.95)
+
+        if image is None:
+            messages = [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+        else:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": self._pil_to_data_url(image),
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                }
+            ]
+
+        output = self.model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        return output["choices"][0]["message"]["content"].strip()
+
+    def generate_single_images(
+        self,
+        prompt,
+        image1,
+        image2,
+        image3,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        # Falls llama.cpp/Qwen3.5-GGUF mehrere Bilder im Chat unterstützt,
+        # funktioniert diese Struktur. Falls nicht, besser ein kombiniertes
+        # Grid-Bild vorher selbst bauen.
+        max_tokens = generate_kwargs.pop(
+            "max_new_tokens",
+            generate_kwargs.pop("max_tokens", 150)
+        )
+
+        temperature = generate_kwargs.pop("temperature", 0.8)
+        top_p = generate_kwargs.pop("top_p", 0.95)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": self._pil_to_data_url(image1),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": self._pil_to_data_url(image2),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": self._pil_to_data_url(image3),
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ]
+
+        output = self.model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        return output["choices"][0]["message"]["content"].strip()
+
+    def generate_from_messages(
+        self,
+        messages,
+        images=None,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        max_tokens = generate_kwargs.pop(
+            "max_new_tokens",
+            generate_kwargs.pop("max_tokens", 150)
+        )
+
+        temperature = generate_kwargs.pop("temperature", 0.8)
+        top_p = generate_kwargs.pop("top_p", 0.95)
+
+        output = self.model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        return output["choices"][0]["message"]["content"].strip()
+
+    def _pil_to_data_url(self, image):
+        import base64
+        from io import BytesIO
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        return f"data:image/png;base64,{encoded}"
+    
+
+
+
+class Qwen3_5_GGUF2(MLLMWrapper):
+    """
+    GGUF wrapper for Qwen3.5-27B Vision via llama-cpp-python.
+
+    Recommended:
+    model_path = ".../Qwen3.5-27B-UD-Q4_K_XL.gguf"
+    mmproj_path = ".../mmproj-BF16.gguf"
+    """
+
+    def __init__(self, model_id=None, quant=None, **kwargs):
+        import os
+        from llama_cpp import Llama
+        from llama_cpp.llama_chat_format import Llava16ChatHandler
+
+        print(f"building {self.__class__.__name__} model with llama.cpp...")
+
+        self.model_id = model_id or "unsloth/Qwen3.5-27B-GGUF"
+        self.quant = quant or "UD-Q4_K_XL"
+
+        self.model_path = kwargs.get("model_path")
+        self.mmproj_path = kwargs.get("mmproj_path")
+
+        if self.model_path is None:
+            raise ValueError("model_path is required")
+
+        if self.mmproj_path is None:
+            raise ValueError("mmproj_path is required for image input")
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(self.model_path)
+
+        if not os.path.exists(self.mmproj_path):
+            raise FileNotFoundError(self.mmproj_path)
+
+        self.chat_handler = Llava16ChatHandler(
+            clip_model_path=self.mmproj_path,
+            verbose=False,
+        )
+
+        self.model = Llama(
+            model_path=self.model_path,
+            chat_handler=self.chat_handler,
+
+            n_gpu_layers=kwargs.get("n_gpu_layers", -1),
+            n_ctx=kwargs.get("n_ctx", 2048),
+
+            n_batch=kwargs.get("n_batch", 1024),
+            n_ubatch=kwargs.get("n_ubatch", 512),
+
+            verbose=False,
+        )
+
+        self.model_size = "27b"
+        self.device = "cuda"
+
+    def generate(
+        self,
+        prompt,
+        image,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        max_tokens = generate_kwargs.pop(
+            "max_new_tokens",
+            generate_kwargs.pop("max_tokens", 150)
+        )
+
+        temperature = generate_kwargs.pop("temperature", 0.8)
+        top_p = generate_kwargs.pop("top_p", 0.95)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": self._pil_to_data_url(image)
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ]
+
+        output = self.model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        return output["choices"][0]["message"]["content"].strip()
+
+    def generate_from_messages(
+        self,
+        messages,
+        images=None,
+        prune_output_to_response=True,
+        **generate_kwargs
+    ):
+        max_tokens = generate_kwargs.pop(
+            "max_new_tokens",
+            generate_kwargs.pop("max_tokens", 150)
+        )
+
+        temperature = generate_kwargs.pop("temperature", 0.8)
+        top_p = generate_kwargs.pop("top_p", 0.95)
+
+        output = self.model.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        return output["choices"][0]["message"]["content"].strip()
+
+    def _pil_to_data_url(self, image):
+        import base64
+        from io import BytesIO
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{encoded}"
 
 
 

@@ -278,6 +278,7 @@ def build_patch_image_with_target_highlight(
         hls_tuple = objs[idx]
         rgb = hls_to_rgb(*hls_tuple)
         img = Image.fromarray(pil_format(rgb)).resize((patch_size, patch_size))
+        #print("Img size: ", img.size)
 
         if highlight_target and idx == 0:
             # highlight target

@@ -3,15 +3,19 @@ from os import path as osp
 config_path = osp.abspath(osp.dirname(__file__))
 
 class Config:
-    def __init__(self):
+    def __init__(self, model=None):
 
         # insert settings
         
-        self.model_id = "Qwen/Qwen2-VL-2B-Instruct"
+        if model is not None:
+            self.model_id = model
+        else:
+            self.model_id = "Qwen/Qwen2-VL-2B-Instruct"
         self.refresh_model_type()
         
         self.quant = None # None, '4bit' , '8bit'
-        self.model_cache_dir = 'PATH'
+        self.model_cache_dir = self.model_cache_dir = osp.join(config_path, "PATH")
+        print(self.model_cache_dir)
         
         self.patch_size = 100
         self.patch_padding = 10
@@ -28,6 +32,7 @@ class Config:
         self.output_dir = osp.join(config_path, 'results')
         
         self.limit = None
+        #self.vllm_quantization = "awq"
         
         
     def refresh_model_type(self):
@@ -46,10 +51,13 @@ class Config:
             "deepseek-ai/Janus-Pro-1B",
             "deepseek-ai/Janus-Pro-7B",
             "allenai/Molmo2-4B",    ##needs transformer version == 4.57.1
+            "Qwen/Qwen3.5-27B-GPTQ-Int4",
             "Qwen/Qwen3.5-9B",
             "Qwen/Qwen3.5-4B", ##with thinking ca. 50h
             "Qwen/Qwen3.5-0.8B",
             "Qwen/Qwen3-VL-2B-Instruct",
+            "cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4",
+            "unsloth/Qwen3.5-27B-GGUF"
         ]
         id_prefix = self.model_id.split('/')[0]
         if id_prefix == 'llava-hf':
@@ -58,13 +66,21 @@ class Config:
             model_version = self.model_id.split('/')[1].split('-')[0]
             print(f"model_version: {model_version}")
             if model_version == 'Qwen3.5':
-                self.model_type = 'Qwen3_5'
+
+                if 'GPTQ' in self.model_id or 'AWQ' in self.model_id:
+                    self.model_type = 'Qwen3_5_vLLM'
+                else:
+                    self.model_type = 'Qwen3_5'
             else:
                 self.model_type = 'Qwen'
         elif id_prefix == 'deepseek-ai':
             self.model_type = 'Janus'
         elif id_prefix == 'allenai':
             self.model_type = 'Molmo'
+        elif id_prefix == 'cyankiwi':
+            self.model_type = 'Qwen3_5_vLLM'
+        elif id_prefix == 'unsloth':
+            self.model_type = 'Qwen3_5_GGUF2'
 
         else:
             raise NotImplementedError
