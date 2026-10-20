@@ -1,4 +1,4 @@
-from tkinter import Image
+from PIL import Image
 
 import torch
 import warnings

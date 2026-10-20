@@ -19,7 +19,9 @@ class Config:
         
         self.patch_size = 100
         self.patch_padding = 10
-        self.grid_padding = 50
+        self.grid_padding = 25
+        self.grid_patch_size = 50
+        self.grid_patch_padding = 7
         self.patch_pad_color = (255, 255, 255)
         self.grid_pad_color = (255, 255, 255)
 
